@@ -1,0 +1,5 @@
+{
+  "name": "Absensi QR Siswa",
+  "description": "Sistem absensi siswa menggunakan QR Code dengan fitur manajemen admin dan laporan kehadiran.",
+  "requestFramePermissions": ["camera"]
+}
