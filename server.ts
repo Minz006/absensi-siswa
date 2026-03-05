@@ -29,10 +29,18 @@ db.exec(`
     student_id TEXT NOT NULL,
     date TEXT NOT NULL,
     status TEXT NOT NULL, -- 'Hadir', 'Sakit', 'Izin', 'Alpa'
+    reason TEXT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (student_id) REFERENCES students(id)
   );
 `);
+
+// Add reason column if not exists (migration)
+try {
+  db.prepare("ALTER TABLE attendance ADD COLUMN reason TEXT").run();
+} catch (e) {
+  // Column already exists or other error
+}
 
 // Seed admin if not exists
 const adminExists = db.prepare("SELECT * FROM admin WHERE username = 'admin'").get();
@@ -42,7 +50,7 @@ if (!adminExists) {
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT || 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json());
 
@@ -54,6 +62,19 @@ async function startServer() {
       res.json({ success: true, message: "Login Admin Berhasil" });
     } else {
       res.status(401).json({ error: "Username atau Password Admin salah" });
+    }
+  });
+
+  app.put("/api/auth/admin/profile", (req, res) => {
+    const { oldUsername, newUsername, newPassword } = req.body;
+    try {
+      const admin = db.prepare("SELECT * FROM admin WHERE username = ?").get(oldUsername);
+      if (!admin) return res.status(404).json({ error: "Admin tidak ditemukan" });
+      
+      db.prepare("UPDATE admin SET username = ?, password = ? WHERE username = ?").run(newUsername, newPassword, oldUsername);
+      res.json({ success: true, message: "Profil Admin diperbarui" });
+    } catch (error) {
+      res.status(500).json({ error: "Gagal memperbarui profil admin" });
     }
   });
 
@@ -115,7 +136,7 @@ async function startServer() {
 
   // Mark attendance (Scan QR)
   app.post("/api/attendance/scan", (req, res) => {
-    const { student_id, status = 'Hadir' } = req.body;
+    const { student_id, status = 'Hadir', reason = null } = req.body;
     const date = new Date().toISOString().split('T')[0];
 
     // Check if student exists
@@ -130,7 +151,7 @@ async function startServer() {
       return res.status(400).json({ error: "Siswa sudah absen hari ini" });
     }
 
-    db.prepare("INSERT INTO attendance (student_id, date, status) VALUES (?, ?, ?)").run(student_id, date, status);
+    db.prepare("INSERT INTO attendance (student_id, date, status, reason) VALUES (?, ?, ?, ?)").run(student_id, date, status, reason);
     res.json({ message: `Absensi ${status} berhasil dicatat untuk ${student.name}` });
   });
 
@@ -143,14 +164,14 @@ async function startServer() {
 
   // Manual attendance update (Admin)
   app.post("/api/attendance/manual", (req, res) => {
-    const { student_id, date, status } = req.body;
+    const { student_id, date, status, reason = null } = req.body;
     
     // Upsert logic for manual admin entry
     const existing = db.prepare("SELECT id FROM attendance WHERE student_id = ? AND date = ?").get(student_id, date);
     if (existing) {
-      db.prepare("UPDATE attendance SET status = ? WHERE id = ?").run(status, existing.id);
+      db.prepare("UPDATE attendance SET status = ?, reason = ? WHERE id = ?").run(status, reason, existing.id);
     } else {
-      db.prepare("INSERT INTO attendance (student_id, date, status) VALUES (?, ?, ?)").run(student_id, date, status);
+      db.prepare("INSERT INTO attendance (student_id, date, status, reason) VALUES (?, ?, ?, ?)").run(student_id, date, status, reason);
     }
     res.json({ message: "Absensi berhasil diperbarui" });
   });

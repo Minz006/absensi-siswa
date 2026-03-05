@@ -22,7 +22,9 @@ import {
   Printer,
   Download,
   Menu,
-  X
+  X,
+  Settings,
+  MessageSquare
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Html5QrcodeScanner } from 'html5-qrcode';
@@ -51,10 +53,11 @@ type AttendanceRecord = {
   student_id: string;
   date: string;
   status: string;
+  reason?: string;
   timestamp: string;
 };
 
-type View = 'admin' | 'user' | 'scan' | 'login-admin' | 'login-student';
+type View = 'admin' | 'user' | 'scan' | 'login-admin' | 'login-student' | 'admin-settings';
 
 function NavButtons({ view, setView, startScanner, isAdmin, onLogout }: { 
   view: View; 
@@ -66,6 +69,7 @@ function NavButtons({ view, setView, startScanner, isAdmin, onLogout }: {
   const buttons = isAdmin ? [
     { id: 'admin', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'scan', label: 'Scanner', icon: Camera },
+    { id: 'admin-settings', label: 'Pengaturan', icon: Settings },
   ] : [
     { id: 'user', label: 'Profil Saya', icon: Users },
   ];
@@ -107,11 +111,14 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isQrModalOpen, setIsQrModalOpen] = useState(false);
+  const [qrStudent, setQrStudent] = useState<Student | null>(null);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [studentAttendance, setStudentAttendance] = useState<AttendanceRecord[]>([]);
   const [scanResult, setScanResult] = useState<{ success: boolean; message: string } | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [adminUsername, setAdminUsername] = useState('admin');
 
   // Auth State
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
@@ -140,6 +147,27 @@ export default function App() {
 
   const handlePrint = () => {
     window.print();
+  };
+
+  const handleDownloadQR = (studentId: string, studentName: string) => {
+    const svg = document.getElementById(`qr-gen-${studentId}`);
+    if (!svg) return;
+
+    const svgData = new XMLSerializer().serializeToString(svg);
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    const img = new Image();
+    img.onload = () => {
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx?.drawImage(img, 0, 0);
+      const pngFile = canvas.toDataURL("image/png");
+      const downloadLink = document.createElement("a");
+      downloadLink.download = `QR_${studentName}_${studentId}.png`;
+      downloadLink.href = `${pngFile}`;
+      downloadLink.click();
+    };
+    img.src = "data:image/svg+xml;base64," + btoa(svgData);
   };
 
   const fetchStudents = async () => {
@@ -178,9 +206,94 @@ export default function App() {
       });
       if (res.ok) {
         setIsAdminAuthenticated(true);
+        setAdminUsername(username);
         setView('admin');
       } else {
         alert('Username atau Password Admin salah');
+      }
+    } catch (err) {
+      alert('Terjadi kesalahan koneksi');
+    }
+  };
+
+  const handleUpdateAdminProfile = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    const newUsername = formData.get('new_username') as string;
+    const newPassword = formData.get('new_password') as string;
+    const confirmPassword = formData.get('confirm_password') as string;
+
+    if (newPassword !== confirmPassword) {
+      alert('Konfirmasi password tidak cocok');
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/auth/admin/profile', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          oldUsername: adminUsername, 
+          newUsername, 
+          newPassword 
+        }),
+      });
+      if (res.ok) {
+        alert('Profil Admin berhasil diperbarui. Silakan login kembali.');
+        handleLogout();
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Gagal memperbarui profil');
+      }
+    } catch (err) {
+      alert('Terjadi kesalahan koneksi');
+    }
+  };
+
+  const handleStudentAttendanceSubmission = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!authenticatedStudent) return;
+
+    const formData = new FormData(e.currentTarget);
+    const status = formData.get('status') as string;
+    const reason = formData.get('reason') as string;
+
+    try {
+      const res = await fetch('/api/attendance/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          student_id: authenticatedStudent.id, 
+          status, 
+          reason 
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert(data.message);
+        fetchStudentAttendance(authenticatedStudent.id);
+        fetchStudents(); // Refresh global stats
+      } else {
+        alert(data.error || 'Gagal mengirim pengajuan');
+      }
+    } catch (err) {
+      alert('Terjadi kesalahan koneksi');
+    }
+  };
+
+  const handleAdminManualAttendance = async (studentId: string, status: string) => {
+    const date = new Date().toISOString().split('T')[0];
+    try {
+      const res = await fetch('/api/attendance/manual', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ student_id: studentId, date, status }),
+      });
+      if (res.ok) {
+        fetchStudents();
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Gagal memperbarui absensi');
       }
     } catch (err) {
       alert('Terjadi kesalahan koneksi');
@@ -523,10 +636,28 @@ export default function App() {
                             <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full text-[10px] font-bold">{student.izin}</span>
                           </td>
                           <td className="px-6 py-4 text-center">
-                            <span className="bg-rose-50 text-rose-700 px-2 py-0.5 rounded-full text-[10px] font-bold">{student.alpa}</span>
+                            <button 
+                              onClick={() => handleAdminManualAttendance(student.id, 'Alpa')}
+                              className={cn(
+                                "px-2 py-0.5 rounded-full text-[10px] font-bold transition-all",
+                                student.alpa > 0 ? "bg-rose-100 text-rose-700" : "bg-rose-50 text-rose-700 hover:bg-rose-100"
+                              )}
+                            >
+                              {student.alpa}
+                            </button>
                           </td>
                           <td className="px-6 py-4 text-right">
                             <div className="flex justify-end gap-1">
+                              <button 
+                                onClick={() => {
+                                  setQrStudent(student);
+                                  setIsQrModalOpen(true);
+                                }}
+                                className="p-2 text-[#868E96] hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                                title="Lihat QR"
+                              >
+                                <QrCode size={16} />
+                              </button>
                               <button 
                                 onClick={() => {
                                   setEditingStudent(student);
@@ -569,6 +700,15 @@ export default function App() {
                         <div className="flex gap-1">
                           <button 
                             onClick={() => {
+                              setQrStudent(student);
+                              setIsQrModalOpen(true);
+                            }}
+                            className="p-2 text-[#868E96] hover:bg-indigo-50 rounded-lg"
+                          >
+                            <QrCode size={18} />
+                          </button>
+                          <button 
+                            onClick={() => {
                               setEditingStudent(student);
                               setIsModalOpen(true);
                             }}
@@ -600,6 +740,43 @@ export default function App() {
                     </div>
                   ))}
                 </div>
+              </div>
+            </motion.div>
+          )}
+
+          {view === 'admin-settings' && isAdminAuthenticated && (
+            <motion.div 
+              key="admin-settings"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="max-w-md mx-auto"
+            >
+              <div className="bg-white p-8 rounded-3xl border border-[#E9ECEF] shadow-2xl">
+                <div className="text-center mb-8">
+                  <div className="bg-indigo-600 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg shadow-indigo-100">
+                    <Settings className="text-white" size={32} />
+                  </div>
+                  <h1 className="text-2xl font-bold">Pengaturan Admin</h1>
+                  <p className="text-[#868E96]">Ubah username dan password admin.</p>
+                </div>
+                <form onSubmit={handleUpdateAdminProfile} className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-bold text-[#495057] mb-1.5">Username Baru</label>
+                    <input name="new_username" type="text" defaultValue={adminUsername} required className="w-full px-4 py-3 bg-[#F8F9FA] border border-[#E9ECEF] rounded-xl focus:ring-2 focus:ring-indigo-500 transition-all" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-[#495057] mb-1.5">Password Baru</label>
+                    <input name="new_password" type="password" required className="w-full px-4 py-3 bg-[#F8F9FA] border border-[#E9ECEF] rounded-xl focus:ring-2 focus:ring-indigo-500 transition-all" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-[#495057] mb-1.5">Konfirmasi Password Baru</label>
+                    <input name="confirm_password" type="password" required className="w-full px-4 py-3 bg-[#F8F9FA] border border-[#E9ECEF] rounded-xl focus:ring-2 focus:ring-indigo-500 transition-all" />
+                  </div>
+                  <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-xl font-bold transition-all shadow-lg shadow-indigo-100 mt-4">
+                    Simpan Perubahan
+                  </button>
+                </form>
               </div>
             </motion.div>
           )}
@@ -648,7 +825,39 @@ export default function App() {
                         level="H" 
                         includeMargin 
                       />
-                      <p className="mt-4 text-xs sm:text-sm font-medium text-indigo-600 print:hidden">Scan QR ini untuk Absensi</p>
+                      <p className="mt-4 text-xs sm:text-sm font-medium text-indigo-600 print:hidden">Scan QR ini untuk Absensi Hadir</p>
+                    </div>
+
+                    {/* Student Submission Form */}
+                    <div className="w-full bg-[#F8F9FA] p-6 rounded-2xl mb-8 text-left print:hidden">
+                      <h3 className="font-bold text-lg mb-4 flex items-center gap-2">
+                        <MessageSquare size={20} className="text-indigo-600" />
+                        Pengajuan Izin / Sakit
+                      </h3>
+                      <form onSubmit={handleStudentAttendanceSubmission} className="space-y-4">
+                        <div className="grid grid-cols-2 gap-4">
+                          <label className="flex items-center gap-2 p-3 bg-white border border-[#E9ECEF] rounded-xl cursor-pointer hover:border-indigo-500 transition-all">
+                            <input type="radio" name="status" value="Sakit" required className="text-indigo-600 focus:ring-indigo-500" />
+                            <span className="text-sm font-medium">Sakit</span>
+                          </label>
+                          <label className="flex items-center gap-2 p-3 bg-white border border-[#E9ECEF] rounded-xl cursor-pointer hover:border-indigo-500 transition-all">
+                            <input type="radio" name="status" value="Izin" required className="text-indigo-600 focus:ring-indigo-500" />
+                            <span className="text-sm font-medium">Izin</span>
+                          </label>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-[#868E96] mb-1 uppercase tracking-wider">Alasan</label>
+                          <textarea 
+                            name="reason" 
+                            required 
+                            placeholder="Masukkan alasan Anda..."
+                            className="w-full px-4 py-3 bg-white border border-[#E9ECEF] rounded-xl focus:ring-2 focus:ring-indigo-500 transition-all h-24 resize-none"
+                          ></textarea>
+                        </div>
+                        <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-xl font-bold transition-all shadow-lg shadow-indigo-100">
+                          Kirim Pengajuan
+                        </button>
+                      </form>
                     </div>
 
                     <div className="grid grid-cols-4 gap-2 sm:gap-4 w-full print:hidden">
@@ -680,6 +889,9 @@ export default function App() {
                             <div>
                               <p className="font-medium">{format(new Date(record.date), 'EEEE, d MMMM yyyy', { locale: id })}</p>
                               <p className="text-xs text-[#868E96]">{format(new Date(record.timestamp), 'HH:mm:ss')}</p>
+                              {record.reason && (
+                                <p className="text-xs mt-1 text-indigo-600 italic">" {record.reason} "</p>
+                              )}
                             </div>
                             <span className={cn(
                               "px-3 py-1 rounded-full text-xs font-bold",
@@ -835,6 +1047,69 @@ export default function App() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Modal Lihat QR */}
+      <AnimatePresence>
+        {isQrModalOpen && qrStudent && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsQrModalOpen(false)}
+              className="absolute inset-0 bg-black/20 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative bg-white w-full max-w-sm rounded-3xl shadow-2xl overflow-hidden p-8 text-center"
+            >
+              <button 
+                onClick={() => setIsQrModalOpen(false)} 
+                className="absolute top-4 right-4 text-[#ADB5BD] hover:text-[#1A1A1A]"
+              >
+                <XCircle size={24} />
+              </button>
+
+              <div className="w-20 h-20 rounded-full bg-indigo-600 flex items-center justify-center text-white text-2xl font-bold mx-auto mb-4">
+                {qrStudent.name.charAt(0)}
+              </div>
+              <h3 className="text-xl font-bold">{qrStudent.name}</h3>
+              <p className="text-[#868E96] text-sm mb-6">{qrStudent.class} • ID: {qrStudent.id}</p>
+
+              <div className="bg-[#F8F9FA] p-6 rounded-2xl mb-6 inline-block">
+                <QRCodeSVG 
+                  id={`qr-gen-${qrStudent.id}`}
+                  value={qrStudent.id} 
+                  size={200} 
+                  level="H" 
+                  includeMargin 
+                />
+              </div>
+
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => handleDownloadQR(qrStudent.id, qrStudent.name)}
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-xl font-bold transition-all flex items-center justify-center gap-2"
+                >
+                  <Download size={20} />
+                  Unduh PNG
+                </button>
+                <button 
+                  onClick={() => {
+                    setIsQrModalOpen(false);
+                    window.print();
+                  }}
+                  className="px-4 bg-[#F8F9FA] hover:bg-[#E9ECEF] text-[#495057] rounded-xl transition-all"
+                >
+                  <Printer size={20} />
+                </button>
+              </div>
             </motion.div>
           </div>
         )}
